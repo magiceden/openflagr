@@ -22,6 +22,8 @@ import (
 	"github.com/go-openapi/runtime/flagext"
 	"github.com/go-openapi/swag"
 	flags "github.com/jessevdk/go-flags"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"golang.org/x/net/netutil"
 
 	"github.com/openflagr/flagr/swagger_gen/restapi/operations"
@@ -29,6 +31,7 @@ import (
 
 const (
 	schemeHTTP  = "http"
+	schemeHTTP2 = "http2"
 	schemeHTTPS = "https"
 	schemeUnix  = "unix"
 )
@@ -225,6 +228,31 @@ func (s *Server) Serve() (err error) {
 		}(s.httpServerL)
 	}
 
+	if s.hasScheme(schemeHTTP2) {
+		http2Server := &http2.Server{} // Use default HTTP/2 server config
+		server := &http.Server{
+			Handler:        h2c.NewHandler(s.handler, http2Server), // wrap handler for h2c
+			MaxHeaderBytes: int(s.MaxHeaderSize),
+			ReadTimeout:    s.ReadTimeout,
+			WriteTimeout:   s.WriteTimeout,
+			IdleTimeout:    s.CleanupTimeout,
+		}
+		if s.ListenLimit > 0 {
+			s.httpServerL = netutil.LimitListener(s.httpServerL, s.ListenLimit)
+		}
+		servers = append(servers, server)
+		wg.Add(1)
+		addr := s.httpServerL.Addr().String()
+		s.Logf("Serving flagr at h2c://%s", addr)
+		go func(l net.Listener) {
+			defer wg.Done()
+			if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
+				s.Fatalf("%v", err)
+			}
+			s.Logf("Stopped serving flagr at h2c://%s", l.Addr())
+		}(s.httpServerL)
+	}
+
 	if s.hasScheme(schemeHTTPS) {
 		httpsServer := new(http.Server)
 		httpsServer.MaxHeaderBytes = int(s.MaxHeaderSize)
@@ -362,7 +390,7 @@ func (s *Server) Listen() error {
 		s.domainSocketL = domSockListener
 	}
 
-	if s.hasScheme(schemeHTTP) {
+	if s.hasScheme(schemeHTTP) || s.hasScheme(schemeHTTP2) {
 		listener, err := net.Listen("tcp", net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
 		if err != nil {
 			return err
