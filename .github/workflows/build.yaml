@@ -16,7 +16,7 @@ on:
 jobs:
   docker:
     name: Build and Push Docker Image to ECR
-    runs-on: medium-arm64
+    runs-on: [medium-arm64]
     permissions:
       id-token: write
       contents: read
