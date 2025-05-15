@@ -16,7 +16,7 @@ on:
 jobs:
   docker:
     name: Build and Push Docker Image to ECR
-    runs-on: [medium-arm64]
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
@@ -55,7 +55,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          platforms: linux/arm64 #,linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             021891583673.dkr.ecr.us-east-2.amazonaws.com/openflagr:latest
