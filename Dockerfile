@@ -1,17 +1,17 @@
 ######################################
 # Prepare npm_builder
 ######################################
-FROM node:16 as npm_builder
+FROM node:16 AS npm_builder
 WORKDIR /go/src/github.com/openflagr/flagr
 ADD . .
 ARG FLAGR_UI_POSSIBLE_ENTITY_TYPES=null
-ENV VUE_APP_FLAGR_UI_POSSIBLE_ENTITY_TYPES ${FLAGR_UI_POSSIBLE_ENTITY_TYPES}
+ENV VUE_APP_FLAGR_UI_POSSIBLE_ENTITY_TYPES=${FLAGR_UI_POSSIBLE_ENTITY_TYPES}
 RUN make build_ui
 
 ######################################
 # Prepare go_builder
 ######################################
-FROM golang:1.24-alpine as go_builder
+FROM golang:1.24-alpine AS go_builder
 WORKDIR /go/src/github.com/openflagr/flagr
 
 RUN apk add --no-cache git make build-base
@@ -38,4 +38,4 @@ ADD --chown=appuser:appgroup ./buildscripts/demo_sqlite3.db /data/demo_sqlite3.d
 
 EXPOSE 18000
 
-CMD "./flagr"
+ENTRYPOINT ["./flagr"]

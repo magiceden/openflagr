@@ -31,7 +31,6 @@ import (
 
 const (
 	schemeHTTP  = "http"
-	schemeHTTP2 = "http2"
 	schemeHTTPS = "https"
 	schemeUnix  = "unix"
 )
@@ -199,6 +198,8 @@ func (s *Server) Serve() (err error) {
 	}
 
 	if s.hasScheme(schemeHTTP) {
+		http2Server := &http2.Server{} // Use default HTTP/2 server config
+
 		httpServer := new(http.Server)
 		httpServer.MaxHeaderBytes = int(s.MaxHeaderSize)
 		httpServer.ReadTimeout = s.ReadTimeout
@@ -212,7 +213,7 @@ func (s *Server) Serve() (err error) {
 			httpServer.IdleTimeout = s.CleanupTimeout
 		}
 
-		httpServer.Handler = s.handler
+		httpServer.Handler = h2c.NewHandler(s.handler, http2Server) // wrap handler for h2c
 
 		configureServer(httpServer, "http", s.httpServerL.Addr().String())
 
@@ -225,31 +226,6 @@ func (s *Server) Serve() (err error) {
 				s.Fatalf("%v", err)
 			}
 			s.Logf("Stopped serving flagr at http://%s", l.Addr())
-		}(s.httpServerL)
-	}
-
-	if s.hasScheme(schemeHTTP2) {
-		http2Server := &http2.Server{} // Use default HTTP/2 server config
-		server := &http.Server{
-			Handler:        h2c.NewHandler(s.handler, http2Server), // wrap handler for h2c
-			MaxHeaderBytes: int(s.MaxHeaderSize),
-			ReadTimeout:    s.ReadTimeout,
-			WriteTimeout:   s.WriteTimeout,
-			IdleTimeout:    s.CleanupTimeout,
-		}
-		if s.ListenLimit > 0 {
-			s.httpServerL = netutil.LimitListener(s.httpServerL, s.ListenLimit)
-		}
-		servers = append(servers, server)
-		wg.Add(1)
-		addr := s.httpServerL.Addr().String()
-		s.Logf("Serving flagr at h2c://%s", addr)
-		go func(l net.Listener) {
-			defer wg.Done()
-			if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
-				s.Fatalf("%v", err)
-			}
-			s.Logf("Stopped serving flagr at h2c://%s", l.Addr())
 		}(s.httpServerL)
 	}
 
@@ -390,7 +366,7 @@ func (s *Server) Listen() error {
 		s.domainSocketL = domSockListener
 	}
 
-	if s.hasScheme(schemeHTTP) || s.hasScheme(schemeHTTP2) {
+	if s.hasScheme(schemeHTTP) {
 		listener, err := net.Listen("tcp", net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
 		if err != nil {
 			return err
