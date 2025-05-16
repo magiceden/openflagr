@@ -21,3 +21,8 @@ docker buildx build --platform=$PLATFORMS \
   .
 
 echo "Image built and pushed: $IMAGE_NAME:$IMAGE_TAG"
+
+# Use git describe if tag available, otherwise use date-based dev tag
+IMAGE_TAG=$(git describe --tags --always --dirty 2>/dev/null || echo "dev-$(date +%Y%m%d-%H%M%S)")
+echo "IMAGE_TAG=${IMAGE_TAG}" >> "${GITHUB_ENV}"
+echo "Image tag: ${IMAGE_TAG}"
