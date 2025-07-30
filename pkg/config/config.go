@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
 	"github.com/caarlos0/env"
@@ -12,6 +14,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"go.opentelemetry.io/otel/trace"
+	// Explicitly removed:
+	// "google.golang.org/grpc"
+	// "google.golang.org/grpc/credentials/insecure"
 )
 
 // EvalOnlyModeDBDrivers is a list of DBDrivers that we should only run in EvalOnlyMode.
@@ -22,9 +39,10 @@ var EvalOnlyModeDBDrivers = map[string]struct{}{
 
 // Global is the global dependency we can use, such as the new relic app instance
 var Global = struct {
-	NewrelicApp  newrelic.Application
-	StatsdClient *statsd.Client
-	Prometheus   prometheusMetrics
+	NewrelicApp   newrelic.Application
+	StatsdClient  *statsd.Client
+	Prometheus    prometheusMetrics
+	OpenTelemetry openTelemetryMetrics
 }{}
 
 func init() {
@@ -36,6 +54,7 @@ func init() {
 	setupStatsd()
 	setupNewrelic()
 	setupPrometheus()
+	setupOpenTelemetry()
 }
 
 func setupEvalOnlyMode() {
@@ -114,6 +133,16 @@ type prometheusMetrics struct {
 	RequestHistogram *prometheus.HistogramVec
 }
 
+type openTelemetryMetrics struct {
+	TracerProvider *sdktrace.TracerProvider
+	MeterProvider  *sdkmetric.MeterProvider
+	Tracer         trace.Tracer
+	Meter          metric.Meter
+	EvalCounter    metric.Int64Counter
+	RequestCounter metric.Int64Counter
+	RequestLatency metric.Float64Histogram
+}
+
 func setupPrometheus() {
 	if Config.PrometheusEnabled {
 		Global.Prometheus.ScrapePath = Config.PrometheusPath
@@ -133,4 +162,163 @@ func setupPrometheus() {
 			}, []string{"status", "path", "method"})
 		}
 	}
+}
+
+func setupOpenTelemetry() {
+	if !Config.OpenTelemetryEnabled {
+		return
+	}
+
+	// Create a resource with service information
+	res, err := resource.New(context.Background(),
+		resource.WithAttributes(
+			semconv.ServiceName(Config.OpenTelemetryServiceName),
+		),
+	)
+	if err != nil {
+		logrus.WithField("err", err).Error("failed to create OpenTelemetry resource")
+		return
+	}
+
+	// Setup trace provider if traces are enabled
+	if Config.OpenTelemetryTracesEnabled {
+		var traceExporter sdktrace.SpanExporter
+		var err error
+
+		switch Config.OpenTelemetryExporterType {
+		case "otlp":
+			// Create OTLP gRPC exporter for traces
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var opts []otlptracegrpc.Option
+			opts = append(opts, otlptracegrpc.WithEndpoint(Config.OpenTelemetryExporterEndpoint))
+			if Config.OpenTelemetryExporterInsecure {
+				opts = append(opts, otlptracegrpc.WithInsecure())
+			}
+
+			traceExporter, err = otlptracegrpc.New(ctx, opts...)
+		case "stdout":
+			// Create stdout exporter for traces (useful for debugging)
+			traceExporter, err = stdouttrace.New()
+		case "none":
+			// No exporter, just use the SDK
+			traceExporter = nil
+		default:
+			logrus.Errorf("unsupported OpenTelemetry exporter type: %s", Config.OpenTelemetryExporterType)
+			return
+		}
+
+		if err != nil {
+			logrus.WithField("err", err).Error("failed to create OpenTelemetry trace exporter")
+			return
+		}
+
+		// Create trace provider
+		tracerProvider := sdktrace.NewTracerProvider(
+			sdktrace.WithResource(res),
+			sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		)
+
+		if traceExporter != nil {
+			tracerProvider.RegisterSpanProcessor(sdktrace.NewBatchSpanProcessor(traceExporter))
+		}
+
+		// Set global trace provider
+		otel.SetTracerProvider(tracerProvider)
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		))
+
+		Global.OpenTelemetry.TracerProvider = tracerProvider
+		Global.OpenTelemetry.Tracer = tracerProvider.Tracer("flagr")
+	}
+
+	// Setup meter provider if metrics are enabled
+	if Config.OpenTelemetryMetricsEnabled {
+		var metricExporter sdkmetric.Exporter
+		var err error
+
+		switch Config.OpenTelemetryExporterType {
+		case "otlp":
+			// Create OTLP gRPC exporter for metrics
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var opts []otlpmetricgrpc.Option
+			opts = append(opts, otlpmetricgrpc.WithEndpoint(Config.OpenTelemetryExporterEndpoint))
+			if Config.OpenTelemetryExporterInsecure {
+				opts = append(opts, otlpmetricgrpc.WithInsecure())
+			}
+
+			metricExporter, err = otlpmetricgrpc.New(ctx, opts...)
+		case "stdout":
+			// Create stdout exporter for metrics (useful for debugging)
+			metricExporter, err = stdoutmetric.New()
+		case "none":
+			// No exporter, just use the SDK
+			metricExporter = nil
+		default:
+			logrus.Errorf("unsupported OpenTelemetry exporter type: %s", Config.OpenTelemetryExporterType)
+			return
+		}
+
+		if err != nil {
+			logrus.WithField("err", err).Error("failed to create OpenTelemetry metric exporter")
+			return
+		}
+
+		// Create meter provider
+		meterProvider := sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(res),
+		)
+
+		if metricExporter != nil {
+			reader := sdkmetric.NewPeriodicReader(metricExporter)
+			meterProvider = sdkmetric.NewMeterProvider(
+				sdkmetric.WithResource(res),
+				sdkmetric.WithReader(reader),
+			)
+		}
+
+		// Set global meter provider
+		otel.SetMeterProvider(meterProvider)
+
+		Global.OpenTelemetry.MeterProvider = meterProvider
+		Global.OpenTelemetry.Meter = meterProvider.Meter("flagr")
+
+		// Create metrics
+		evalCounter, err := Global.OpenTelemetry.Meter.Int64Counter(
+			"flagr_eval_results",
+			metric.WithDescription("A counter of eval results"),
+		)
+		if err != nil {
+			logrus.WithField("err", err).Error("failed to create OpenTelemetry eval counter")
+		} else {
+			Global.OpenTelemetry.EvalCounter = evalCounter
+		}
+
+		requestCounter, err := Global.OpenTelemetry.Meter.Int64Counter(
+			"flagr_requests_total",
+			metric.WithDescription("The total http requests received"),
+		)
+		if err != nil {
+			logrus.WithField("err", err).Error("failed to create OpenTelemetry request counter")
+		} else {
+			Global.OpenTelemetry.RequestCounter = requestCounter
+		}
+
+		requestLatency, err := Global.OpenTelemetry.Meter.Float64Histogram(
+			"flagr_requests_duration_seconds",
+			metric.WithDescription("A histogram of latencies for requests received"),
+		)
+		if err != nil {
+			logrus.WithField("err", err).Error("failed to create OpenTelemetry request latency histogram")
+		} else {
+			Global.OpenTelemetry.RequestLatency = requestLatency
+		}
+	}
+
+	logrus.Info("OpenTelemetry setup completed")
 }

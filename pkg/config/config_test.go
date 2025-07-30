@@ -63,3 +63,32 @@ func TestSetupPrometheusWithLatencies(t *testing.T) {
 	assert.NotNil(t, Global.Prometheus.RequestCounter)
 	assert.NotNil(t, Global.Prometheus.RequestHistogram)
 }
+
+func TestSetupOpenTelemetry(t *testing.T) {
+	Config.OpenTelemetryEnabled = false
+	setupOpenTelemetry()
+	assert.Nil(t, Global.OpenTelemetry.TracerProvider)
+	assert.Nil(t, Global.OpenTelemetry.MeterProvider)
+
+	Config.OpenTelemetryEnabled = true
+	Config.OpenTelemetryExporterType = "none"
+	defer func() {
+		Config.OpenTelemetryEnabled = false
+	}()
+
+	setupOpenTelemetry()
+
+	// When using "none" exporter, we should still have providers but no metrics
+	if Config.OpenTelemetryTracesEnabled {
+		assert.NotNil(t, Global.OpenTelemetry.TracerProvider)
+		assert.NotNil(t, Global.OpenTelemetry.Tracer)
+	}
+
+	if Config.OpenTelemetryMetricsEnabled {
+		assert.NotNil(t, Global.OpenTelemetry.MeterProvider)
+		assert.NotNil(t, Global.OpenTelemetry.Meter)
+		assert.NotNil(t, Global.OpenTelemetry.RequestCounter)
+		assert.NotNil(t, Global.OpenTelemetry.RequestLatency)
+		assert.NotNil(t, Global.OpenTelemetry.EvalCounter)
+	}
+}

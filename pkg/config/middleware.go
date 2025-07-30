@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -20,6 +21,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/negroni"
 	negroninewrelic "github.com/yadvendar/negroni-newrelic-go-agent"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
@@ -28,6 +34,25 @@ import (
 func ServerShutdown() {
 	if Config.StatsdEnabled && Config.StatsdAPMEnabled {
 		tracer.Stop()
+	}
+
+	if Config.OpenTelemetryEnabled {
+		// Shutdown OpenTelemetry providers
+		if Config.OpenTelemetryTracesEnabled && Global.OpenTelemetry.TracerProvider != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := Global.OpenTelemetry.TracerProvider.Shutdown(ctx); err != nil {
+				logrus.WithField("err", err).Error("failed to shutdown OpenTelemetry tracer provider")
+			}
+		}
+
+		if Config.OpenTelemetryMetricsEnabled && Global.OpenTelemetry.MeterProvider != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := Global.OpenTelemetry.MeterProvider.Shutdown(ctx); err != nil {
+				logrus.WithField("err", err).Error("failed to shutdown OpenTelemetry meter provider")
+			}
+		}
 	}
 }
 
@@ -65,6 +90,10 @@ func SetupGlobalMiddleware(handler http.Handler) http.Handler {
 			counter:   Global.Prometheus.RequestCounter,
 			latencies: Global.Prometheus.RequestHistogram,
 		})
+	}
+
+	if Config.OpenTelemetryEnabled {
+		n.Use(&openTelemetryMiddleware{})
 	}
 
 	if Config.NewRelicEnabled {
@@ -315,6 +344,74 @@ func (p *prometheusMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 				p.latencies.WithLabelValues(status, r.RequestURI, r.Method).Observe(duration)
 			}
 		}(time.Now())
+		next(w, r)
+	}
+}
+
+type openTelemetryMiddleware struct{}
+
+func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	// Skip tracing for metrics endpoint if it's the same as Prometheus
+	if Config.PrometheusEnabled && r.URL.EscapedPath() == Global.Prometheus.ScrapePath {
+		next(w, r)
+		return
+	}
+
+	// Extract context from request headers
+	propagator := otel.GetTextMapPropagator()
+	ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+	// Create span attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("http.method", r.Method),
+		attribute.String("http.url", r.URL.String()),
+		attribute.String("http.host", r.Host),
+	}
+
+	// Start a new span
+	if Config.OpenTelemetryTracesEnabled && Global.OpenTelemetry.Tracer != nil {
+		ctx, span := Global.OpenTelemetry.Tracer.Start(
+			ctx,
+			fmt.Sprintf("HTTP %s %s", r.Method, r.URL.Path),
+			trace.WithAttributes(attrs...),
+		)
+		defer span.End()
+
+		// Inject the context back into the request
+		r = r.WithContext(ctx)
+	}
+
+	// Track metrics
+	if Config.OpenTelemetryMetricsEnabled {
+		startTime := time.Now()
+
+		// Wrap the ResponseWriter to capture the status code
+		responseWriter := negroni.NewResponseWriter(w)
+
+		// Call the next handler
+		next(responseWriter, r)
+
+		// Record metrics after the request is processed
+		duration := time.Since(startTime).Seconds()
+		status := strconv.Itoa(responseWriter.Status())
+
+		metricAttrs := []attribute.KeyValue{
+			attribute.String("http.status", status),
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.Path),
+		}
+
+		// Record request count
+		if Global.OpenTelemetry.RequestCounter != nil {
+			Global.OpenTelemetry.RequestCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		}
+
+		// Record request duration
+		if Global.OpenTelemetry.RequestLatency != nil {
+			Global.OpenTelemetry.RequestLatency.Record(ctx, duration, metric.WithAttributes(metricAttrs...))
+		}
+	} else {
+		// If metrics are not enabled, just call the next handler
 		next(w, r)
 	}
 }
