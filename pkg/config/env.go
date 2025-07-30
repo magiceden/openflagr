@@ -106,6 +106,21 @@ var Config = struct {
 	// PrometheusIncludeLatencyHistogram - set whether Prometheus should also export a histogram of request latencies (this increases cardinality significantly)
 	PrometheusIncludeLatencyHistogram bool `env:"FLAGR_PROMETHEUS_INCLUDE_LATENCY_HISTOGRAM" envDefault:"false"`
 
+	// OpenTelemetryEnabled - enable OpenTelemetry metrics and traces export
+	OpenTelemetryEnabled bool `env:"FLAGR_OPENTELEMETRY_ENABLED" envDefault:"false"`
+	// OpenTelemetryServiceName - set the service name for OpenTelemetry
+	OpenTelemetryServiceName string `env:"FLAGR_OPENTELEMETRY_SERVICE_NAME" envDefault:"flagr"`
+	// OpenTelemetryExporterType - set the exporter type for OpenTelemetry (otlp, stdout, none)
+	OpenTelemetryExporterType string `env:"FLAGR_OPENTELEMETRY_EXPORTER_TYPE" envDefault:"otlp"`
+	// OpenTelemetryExporterEndpoint - set the endpoint for OpenTelemetry exporter
+	OpenTelemetryExporterEndpoint string `env:"FLAGR_OPENTELEMETRY_EXPORTER_ENDPOINT" envDefault:"localhost:4317"`
+	// OpenTelemetryExporterInsecure - set whether to use insecure connection for OpenTelemetry exporter
+	OpenTelemetryExporterInsecure bool `env:"FLAGR_OPENTELEMETRY_EXPORTER_INSECURE" envDefault:"true"`
+	// OpenTelemetryMetricsEnabled - enable OpenTelemetry metrics
+	OpenTelemetryMetricsEnabled bool `env:"FLAGR_OPENTELEMETRY_METRICS_ENABLED" envDefault:"true"`
+	// OpenTelemetryTracesEnabled - enable OpenTelemetry traces
+	OpenTelemetryTracesEnabled bool `env:"FLAGR_OPENTELEMETRY_TRACES_ENABLED" envDefault:"true"`
+
 	// RecorderEnabled - enable data records logging
 	RecorderEnabled bool `env:"FLAGR_RECORDER_ENABLED" envDefault:"false"`
 	// RecorderType - the pipeline to log data records, e.g. Kafka

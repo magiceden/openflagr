@@ -82,3 +82,39 @@ NOTE: this doesn't prevent people from directly curling /api/v1/flags to update 
 FLAGR_BASIC_AUTH_WHITELIST_PATHS="/api/v1/flags,/api/v1/evaluation"
 FLAGR_BASIC_AUTH_EXACT_WHITELIST_PATHS=""
 ```
+
+## OpenTelemetry Support
+
+Flagr supports OpenTelemetry for metrics and traces. You can enable it with the following environment variables:
+
+```
+# Enable OpenTelemetry
+FLAGR_OPENTELEMETRY_ENABLED=true
+
+# Set the service name (default: flagr)
+FLAGR_OPENTELEMETRY_SERVICE_NAME=flagr
+
+# Set the exporter type (otlp, stdout, none)
+FLAGR_OPENTELEMETRY_EXPORTER_TYPE=otlp
+
+# Set the endpoint for the OTLP exporter (default: localhost:4317)
+FLAGR_OPENTELEMETRY_EXPORTER_ENDPOINT=localhost:4317
+
+# Set whether to use insecure connection for the OTLP exporter (default: true)
+FLAGR_OPENTELEMETRY_EXPORTER_INSECURE=true
+
+# Enable/disable metrics (default: true)
+FLAGR_OPENTELEMETRY_METRICS_ENABLED=true
+
+# Enable/disable traces (default: true)
+FLAGR_OPENTELEMETRY_TRACES_ENABLED=true
+```
+
+When enabled, OpenTelemetry will collect the following metrics:
+- `flagr_eval_results`: A counter of evaluation results
+- `flagr_requests_total`: The total HTTP requests received
+- `flagr_requests_duration_seconds`: A histogram of latencies for requests received
+
+For traces, OpenTelemetry will create spans for each HTTP request with attributes for the method, URL, and host.
+
+You can use the `stdout` exporter type for debugging or the `otlp` exporter type to send data to an OpenTelemetry collector.
