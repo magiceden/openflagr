@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -361,16 +362,31 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	propagator := otel.GetTextMapPropagator()
 	ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
-	// Create span attributes
-	attrs := []attribute.KeyValue{
-		attribute.String("http.method", r.Method),
-		attribute.String("http.url", r.URL.String()),
-		attribute.String("http.host", r.Host),
+	// Prepare common HTTP attributes (stable OTel semconv)
+	methodAttr := attribute.String("http.request.method", r.Method)
+	pathAttr := attribute.String("url.path", r.URL.Path)
+
+	// Derive server.address and server.port
+	serverAddr := r.Host
+	var attrs []attribute.KeyValue
+	var portAttr *attribute.KeyValue
+	if host, portStr, err := net.SplitHostPort(serverAddr); err == nil {
+		serverAddr = host
+		if p, err2 := strconv.Atoi(portStr); err2 == nil && p > 0 {
+			pa := attribute.Int("server.port", p)
+			portAttr = &pa
+		}
+	}
+	attrs = append(attrs, methodAttr, pathAttr, attribute.String("server.address", serverAddr))
+	if portAttr != nil {
+		attrs = append(attrs, *portAttr)
 	}
 
-	// Start a new span
+	// Start a new span if enabled
+	var span trace.Span
 	if Config.OpenTelemetryTracesEnabled && Global.OpenTelemetry.Tracer != nil {
-		ctx, span := Global.OpenTelemetry.Tracer.Start(
+		var spanCtx context.Context
+		spanCtx, span = Global.OpenTelemetry.Tracer.Start(
 			ctx,
 			fmt.Sprintf("HTTP %s %s", r.Method, r.URL.Path),
 			trace.WithAttributes(attrs...),
@@ -378,27 +394,30 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		defer span.End()
 
 		// Inject the context back into the request
-		r = r.WithContext(ctx)
+		r = r.WithContext(spanCtx)
+		ctx = spanCtx
 	}
 
-	// Track metrics
-	if Config.OpenTelemetryMetricsEnabled {
-		startTime := time.Now()
+	startTime := time.Now()
+	var status int
 
+	if Config.OpenTelemetryMetricsEnabled {
 		// Wrap the ResponseWriter to capture the status code
 		responseWriter := negroni.NewResponseWriter(w)
 
 		// Call the next handler
 		next(responseWriter, r)
 
+		// Capture status
+		status = responseWriter.Status()
+
 		// Record metrics after the request is processed
 		duration := time.Since(startTime).Seconds()
-		status := strconv.Itoa(responseWriter.Status())
 
 		metricAttrs := []attribute.KeyValue{
-			attribute.String("http.status", status),
-			attribute.String("http.method", r.Method),
-			attribute.String("http.url", r.URL.Path),
+			attribute.Int("http.response.status_code", status),
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
 		}
 
 		// Record request count
@@ -411,7 +430,17 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			Global.OpenTelemetry.RequestLatency.Record(ctx, duration, metric.WithAttributes(metricAttrs...))
 		}
 	} else {
-		// If metrics are not enabled, just call the next handler
+		// Call the next handler without metrics
 		next(w, r)
+
+		// Try to capture status code if possible
+		if rw, ok := w.(negroni.ResponseWriter); ok {
+			status = rw.Status()
+		}
+	}
+
+	// Set response status attribute on the span if available
+	if span != nil && status > 0 {
+		span.SetAttributes(attribute.Int("http.response.status_code", status))
 	}
 }
