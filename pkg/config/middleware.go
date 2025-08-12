@@ -365,6 +365,7 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	// Prepare common HTTP attributes (stable OTel semconv)
 	methodAttr := attribute.String("http.request.method", r.Method)
 	pathAttr := attribute.String("url.path", r.URL.Path)
+	routeAttr := attribute.String("http.route", r.URL.Path)
 
 	// Derive server.address and server.port
 	serverAddr := r.Host
@@ -377,7 +378,7 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			portAttr = &pa
 		}
 	}
-	attrs = append(attrs, methodAttr, pathAttr, attribute.String("server.address", serverAddr))
+	attrs = append(attrs, methodAttr, pathAttr, routeAttr, attribute.String("server.address", serverAddr))
 	if portAttr != nil {
 		attrs = append(attrs, *portAttr)
 	}
@@ -389,7 +390,7 @@ func (o *openTelemetryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		spanCtx, span = Global.OpenTelemetry.Tracer.Start(
 			ctx,
 			fmt.Sprintf("HTTP %s %s", r.Method, r.URL.Path),
-			trace.WithAttributes(attrs...),
+			trace.WithAttributes(attrs...), trace.WithSpanKind(trace.SpanKindServer),
 		)
 		defer span.End()
 
