@@ -3,6 +3,7 @@
 ######################################
 FROM node:16 AS npm_builder
 WORKDIR /go/src/github.com/openflagr/flagr
+RUN false
 ADD . .
 ARG FLAGR_UI_POSSIBLE_ENTITY_TYPES=null
 ENV VUE_APP_FLAGR_UI_POSSIBLE_ENTITY_TYPES=${FLAGR_UI_POSSIBLE_ENTITY_TYPES}
